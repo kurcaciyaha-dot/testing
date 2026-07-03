@@ -1,0 +1,30 @@
+{
+  "name": "Ubuntu LTS VPS Codespace",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-22.04",
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "configureZshAsDefaultShell": true,
+      "upgradePackages": true
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "moby": true
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.live-server"
+      ]
+    }
+  },
+  "forwardPorts": [22, 80, 443, 8080],
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "remoteUser": "codespace",
+  "hostRequirements": {
+    "cpus": 2,
+    "memory": "4gb",
+    "storage": "32gb"
+  }
+}
