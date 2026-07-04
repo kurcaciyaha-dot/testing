@@ -1,0 +1,205 @@
+name: Windows Remote Desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Durasi akses (menit)'
+        required: false
+        default: '180'
+        type: choice
+        options:
+          - '60'
+          - '120'
+          - '180'
+          - '360'
+          - '720'
+
+jobs:
+  setup-rdp:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install Chrome Remote Desktop
+      run: |
+        # Download Chrome Remote Desktop MSI
+        Write-Host "Downloading Chrome Remote Desktop..."
+        Invoke-WebRequest -Uri "https://dl.google.com/dl/edgedl/chrome-remote-desktop/chromeremotedesktop.msi" -OutFile "$env:TEMP\chromeremotedesktop.msi"
+        
+        # Install Chrome Remote Desktop silently
+        Write-Host "Installing Chrome Remote Desktop..."
+        Start-Process msiexec -ArgumentList "/i `"$env:TEMP\chromeremotedesktop.msi`" /quiet /norestart" -Wait
+        
+        # Wait for installation to complete
+        Start-Sleep -Seconds 10
+        
+        Write-Host "Installation completed."
+
+    - name: Setup Chrome Remote Desktop Host
+      run: |
+        # Define path to the host executable
+        $hostExe = "$env:PROGRAMFILES(X86)\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
+        
+        # Check if file exists
+        if (Test-Path $hostExe) {
+          Write-Host "Found remoting_start_host.exe at: $hostExe"
+        } else {
+          Write-Host "WARNING: remoting_start_host.exe not found at expected path"
+          # Try alternative path
+          $hostExe = "C:\Program Files (x86)\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
+          if (Test-Path $hostExe) {
+            Write-Host "Found at alternative path: $hostExe"
+          } else {
+            Write-Host "ERROR: Cannot find remoting_start_host.exe"
+            exit 1
+          }
+        }
+        
+        # Generate random PIN (6 digits)
+        $pin = -join ((48..57) | Get-Random -Count 6 | ForEach-Object { [char]$_ })
+        
+        # Get computer name
+        $computerName = $env:COMPUTERNAME
+        
+        # Authorization code from GitHub Secrets
+        $authCode = "${{ secrets.CRD_AUTH_CODE }}"
+        
+        if ([string]::IsNullOrEmpty($authCode)) {
+          Write-Host "ERROR: CRD_AUTH_CODE secret is not set!"
+          Write-Host "Please add your authorization code to GitHub Secrets."
+          exit 1
+        }
+        
+        Write-Host "================================================"
+        Write-Host "SETTING UP CHROME REMOTE DESKTOP"
+        Write-Host "================================================"
+        Write-Host "Computer Name: $computerName"
+        Write-Host "Authorization Code: $authCode"
+        Write-Host "PIN: $pin"
+        Write-Host "Redirect URL: https://remotedesktop.google.com/_/oauthredirect"
+        Write-Host "================================================"
+        
+        # Run the remoting_start_host.exe with the specified parameters
+        Write-Host "Running remoting_start_host.exe..."
+        & $hostExe --code="$authCode" --redirect-url="https://remotedesktop.google.com/_/oauthredirect" --name="$computerName"
+        
+        # Check if the command was successful
+        if ($LASTEXITCODE -eq 0) {
+          Write-Host "SUCCESS: Chrome Remote Desktop host started successfully!"
+        } else {
+          Write-Host "WARNING: Command exited with code: $LASTEXITCODE"
+        }
+        
+        # Save connection info to file
+        $info = @{
+          ComputerName = $computerName
+          PIN = $pin
+          AuthorizationCode = $authCode
+          RedirectURL = "https://remotedesktop.google.com/_/oauthredirect"
+          AccessURL = "https://remotedesktop.google.com/access"
+          Status = if ($LASTEXITCODE -eq 0) { "Success" } else { "Failed" }
+          Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        }
+        $info | ConvertTo-Json | Out-File -FilePath "rdp_connection_info.json"
+        
+        Write-Host ""
+        Write-Host "================================================"
+        Write-Host "CONNECTION INSTRUCTIONS"
+        Write-Host "================================================"
+        Write-Host "1. Go to: https://remotedesktop.google.com/access"
+        Write-Host "2. Look for computer: $computerName"
+        Write-Host "3. Click on it and enter PIN: $pin"
+        Write-Host "4. You are now connected to Windows VM!"
+        Write-Host "================================================"
+
+    - name: Display System Information
+      run: |
+        Write-Host ""
+        Write-Host "================================================"
+        Write-Host "SYSTEM INFORMATION"
+        Write-Host "================================================"
+        Write-Host "Hostname: $env:COMPUTERNAME"
+        Write-Host "Username: $env:USERNAME"
+        Write-Host "OS: $((Get-CimInstance Win32_OperatingSystem).Caption)"
+        Write-Host "OS Version: $((Get-CimInstance Win32_OperatingSystem).Version)"
+        Write-Host "Architecture: $env:PROCESSOR_ARCHITECTURE"
+        Write-Host "RAM: $([math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB, 2)) GB"
+        Write-Host "CPU: $((Get-CimInstance Win32_Processor).Name)"
+        Write-Host "================================================"
+
+    - name: Show Network Information
+      run: |
+        Write-Host ""
+        Write-Host "================================================"
+        Write-Host "NETWORK INFORMATION"
+        Write-Host "================================================"
+        $ip = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.InterfaceAlias -ne "Loopback" -and $_.IPAddress -ne "127.0.0.1"} | Select-Object -First 1).IPAddress
+        Write-Host "IP Address: $ip"
+        Write-Host "================================================"
+
+    - name: Keep Session Alive
+      run: |
+        $duration = ${{ github.event.inputs.duration || 180 }}
+        Write-Host ""
+        Write-Host "================================================"
+        Write-Host "SESSION ACTIVE"
+        Write-Host "================================================"
+        Write-Host "Duration: $duration minutes"
+        Write-Host "Session will expire at: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        Write-Host "================================================"
+        Write-Host ""
+        
+        $endTime = (Get-Date).AddMinutes($duration)
+        $counter = 0
+        
+        while ((Get-Date) -lt $endTime) {
+          $remaining = [math]::Round(($endTime - (Get-Date)).TotalMinutes, 0)
+          $remainingSeconds = [math]::Round(($endTime - (Get-Date)).TotalSeconds, 0)
+          
+          if ($counter -eq 0) {
+            Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Session active - $remaining minutes ($remainingSeconds seconds) remaining..."
+          }
+          
+          $counter++
+          if ($counter -ge 5) {
+            $counter = 0
+          }
+          
+          Start-Sleep -Seconds 60
+        }
+        
+        Write-Host ""
+        Write-Host "Session duration completed. Shutting down..."
+
+    - name: Cleanup and Stop Host
+      if: always()
+      run: |
+        Write-Host ""
+        Write-Host "================================================"
+        Write-Host "CLEANING UP"
+        Write-Host "================================================"
+        
+        # Try to stop the host service
+        $hostExe = "$env:PROGRAMFILES(X86)\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
+        if (Test-Path $hostExe) {
+          Write-Host "Stopping Chrome Remote Desktop host..."
+          & $hostExe --stop
+          Write-Host "Stop command executed."
+        }
+        
+        # Stop the service
+        Stop-Service -Name "chromoting" -ErrorAction SilentlyContinue -Force
+        Write-Host "Service stopped."
+        
+        Write-Host "Cleanup completed."
+
+    - name: Upload Connection Info
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: rdp-connection-info
+        path: rdp_connection_info.json
+        retention-days: 1
